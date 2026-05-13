@@ -1,30 +1,25 @@
 # gdml-to-mesh
 
-A reproducible pipeline to convert **Geant4 GDML detector geometry** into
-**GPU-ready triangle meshes and placement data**, suitable for
-**Theia / Hephaistos** ray tracing and optical simulations.
+A tool for converting GDML (Geometry Description Markup Language) files into mesh formats for simulation and visualization purposes, with advanced support for boundary surface extraction using Open CASCADE (OCC).
 
-The pipeline preserves:
-- exact geometry
-- instancing
-- placements (translations + rotations)
-- material classification
+## Features
 
-and avoids baking transforms into meshes.
+- Parses GDML geometry files.
+- Extracts and processes geometrical shapes and **boundary surfaces**.
+- Uses Open CASCADE (pythonOCC) for CAD processing and mesh extraction.
+- Generates mesh files compatible with physics simulations and 3D visualization.
+- Supports custom configuration for mesh and geometry extraction.
+- Enforces code quality with automated `pre-commit` hooks.
 
----
+## Prerequisites
 
-## Overview
+1. **Python 3.x**  
+   Install Python 3 from [python.org](https://www.python.org/downloads/).
 
-This project implements the following workflow:
+2. **Python Virtual Environment (Optional Recommended)**  
+   Manage dependencies in an isolated environment.
 
-1. Load detector geometry from **Geant4 GDML**
-2. Extract **triangle meshes** for each unique solid
-3. Extract **placements** (translation + rotation) for each physical volume
-4. Export data to **NumPy `.npz` files**
-5. Visually validate geometry + placements in Python
-6. Prepare geometry for GPU loading with **Theia**
+3. **Open CASCADE (OCC) / pythonOCC**  
+   Used for CAD geometry processing and boundary surface extraction.
 
----
 
-## Repository Structure
