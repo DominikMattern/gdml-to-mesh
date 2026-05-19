@@ -4,27 +4,53 @@ Converts GDML detector geometry files into triangulated mesh outputs for optical
 
 ---
 
-## Requirements
+## Installation
 
-### System dependencies (macOS)
+### Option 1 — conda (recommended)
 
-Install via Homebrew:
+This installs everything including Geant4 and OpenCASCADE from conda-forge:
 
 ```bash
-brew install cmake opencascade qt@5
+git clone https://github.com/maninder1apr/gdml-to-mesh.git
+cd gdml-to-mesh
+
+conda env create -f environment.yml
+conda activate gdml-to-mesh
 ```
 
-Install Geant4 and HDF5 manually (or from your experiment software stack):
+That's it. The `environment.yml` installs all C++ and Python dependencies and builds the package.
 
-| Dependency | Version | Default path |
-|-----------|---------|-------------|
-| Geant4 | ≥ 11 (with GDML) | `~/Desktop/Programs/geant4-install` |
-| OpenCASCADE | ≥ 7.6 | `/opt/homebrew/Cellar/opencascade/7.9.3` |
-| HDF5 | any | `~/Desktop/Programs/hdf5-install` |
-| Qt5 | 5.x | `/opt/homebrew/opt/qt@5` |
-| CMake | ≥ 3.16 | via Homebrew |
+### Option 2 — manual (macOS with Homebrew)
 
-If your paths differ from the defaults, set environment variables:
+Install C++ dependencies:
+
+```bash
+brew install cmake opencascade qt@5 hdf5
+```
+
+Install Geant4 manually (requires CMake build):
+
+```bash
+git clone https://github.com/Geant4/geant4.git
+cd geant4 && mkdir build && cd build
+cmake .. -DGEANT4_USE_GDML=ON -DCMAKE_INSTALL_PREFIX=~/geant4-install
+make -j8 && make install
+export GEANT4_INSTALL=~/geant4-install
+```
+
+Then install the Python package:
+
+```bash
+git clone https://github.com/maninder1apr/gdml-to-mesh.git
+cd gdml-to-mesh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+### Custom dependency paths
+
+If your dependencies are in non-standard locations, set these environment variables before running `pip install -e .`:
 
 ```bash
 export GEANT4_INSTALL=/path/to/geant4-install
@@ -33,31 +59,22 @@ export HDF5_INSTALL=/path/to/hdf5-install
 export Qt5_DIR=/path/to/qt5
 ```
 
-### Python dependencies
-
-- Python 3.9+
-- `trimesh`, `matplotlib`, `numpy`, `scipy` (installed automatically by pip)
-
 ---
 
-## Installation
+## System requirements
 
-```bash
-git clone https://github.com/maninder1apr/gdml-to-mesh.git
-cd gdml-to-mesh
-
-# create and activate a virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# install the Python package (builds the C++ binary automatically)
-pip install -e .
-```
-
-The first `pip install` will:
-1. Detect your Geant4, OCC, HDF5, Qt5 paths
-2. Run `cmake` and `make` to build the `occ_mesher` binary
-3. Install the `gdml-to-mesh` CLI and Python package
+| Dependency | Version | Install |
+|-----------|---------|---------|
+| Python | ≥ 3.9 | `conda install python=3.11` |
+| Geant4 | ≥ 11 (with GDML) | `conda install -c conda-forge geant4` |
+| OpenCASCADE | ≥ 7.6 | `conda install -c conda-forge opencascade` |
+| HDF5 | any | `conda install -c conda-forge hdf5` |
+| Qt5 | 5.x | `conda install -c conda-forge qt` |
+| CMake | ≥ 3.16 | `conda install -c conda-forge cmake` |
+| trimesh | any | installed automatically |
+| matplotlib | any | installed automatically |
+| numpy | any | installed automatically |
+| scipy | any | installed automatically |
 
 ---
 
@@ -68,12 +85,14 @@ gdml-to-mesh check
 ```
 
 Expected output:
+
 ```
 gdml-to-mesh dependency detection:
-  Geant4  : /path/to/geant4-install
-  OCC     : /path/to/opencascade
-  HDF5    : /path/to/hdf5-install
-  Qt5     : /path/to/qt5
+  conda env : /path/to/conda/envs/gdml-to-mesh
+  Geant4   : /path/to/geant4
+  OCC      : /path/to/opencascade
+  HDF5     : /path/to/hdf5
+  Qt5      : /path/to/qt5
 
   binary built : True
   binary path  : .../geant4_extract/build/occ_mesher
@@ -127,7 +146,8 @@ for iface in result.interfaces:
     print(iface["lv_inside"], iface["surface"], iface["area_mm2"])
 
 # load previously generated outputs
-result = load_interfaces("output/metadata/interfaces.json")
+interfaces = load_interfaces("output/metadata/interfaces.json")
+materials  = load_materials("output/metadata/materials.json")
 ```
 
 ---
@@ -141,7 +161,7 @@ cad/
     interface_1.stl       # LAr ↔ PEN boundary (specular)
     ...                   # 298 total for scarf_pen.gdml
   volumes/
-    lar_pv.stl            # key detector volumes for visualization
+    lar_pv.stl
     bege_pv.stl
     pen_bege_pv.stl
     icpc_pv.stl
@@ -152,7 +172,7 @@ cad/
 metadata/
   interfaces.json         # one entry per STL
   materials.json          # optical MPT tables with canonical LEGEND names
-  surfaces.json           # 554 G4LogicalBorderSurface entries with MPT
+  surfaces.json           # G4LogicalBorderSurface entries with MPT
 ```
 
 ### Interface surface types
@@ -168,7 +188,7 @@ metadata/
 ## Visualizer
 
 ```bash
-# all interfaces + detector volumes (color-coded by surface type)
+# all interfaces + detector volumes
 python3 geant4_extract/visualize.py
 
 # filter by surface type
