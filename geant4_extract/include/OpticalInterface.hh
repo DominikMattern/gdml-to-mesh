@@ -18,4 +18,8 @@ struct OpticalInterface {
     std::string materialB;
 
     TopoDS_Shape boundary;
+
+    // populated by SurfaceMesher
+    int    n_triangles = 0;
+    double area_mm2    = 0.0;
 };

@@ -7,6 +7,7 @@
   "materials": [
     {
       "name": "liquid_argon",
+      "canonical_name": "lar",
       "density_g_cm3": 1.39,
       "state": 2,
       "properties": {
@@ -97,6 +98,7 @@
     },
     {
       "name": "EnrichedGermanium0.076",
+      "canonical_name": "germanium_natural",
       "density_g_cm3": 5.429362722,
       "state": 1,
       "properties": {
@@ -105,6 +107,7 @@
     },
     {
       "name": "PEN",
+      "canonical_name": "pen",
       "density_g_cm3": 1.3,
       "state": 1,
       "properties": {
@@ -186,6 +189,7 @@
     },
     {
       "name": "pmma_cl2",
+      "canonical_name": "pmma_cl2",
       "density_g_cm3": 1.2,
       "state": 1,
       "properties": {
@@ -203,6 +207,7 @@
     },
     {
       "name": "pmma",
+      "canonical_name": "pmma",
       "density_g_cm3": 1.2,
       "state": 1,
       "properties": {
@@ -220,6 +225,7 @@
     },
     {
       "name": "ps_fibers",
+      "canonical_name": "ps_fibers",
       "density_g_cm3": 1.05,
       "state": 1,
       "properties": {
@@ -298,6 +304,7 @@
     },
     {
       "name": "metal_silicon",
+      "canonical_name": "metal_silicon",
       "density_g_cm3": 2.33,
       "state": 1,
       "properties": {
@@ -306,6 +313,7 @@
     },
     {
       "name": "metal_copper",
+      "canonical_name": "metal_copper",
       "density_g_cm3": 8.96,
       "state": 1,
       "properties": {
@@ -314,6 +322,7 @@
     },
     {
       "name": "tpb_on_fibers",
+      "canonical_name": "tpb_on_fibers",
       "density_g_cm3": 1.08,
       "state": 1,
       "properties": {

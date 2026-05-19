@@ -15,6 +15,26 @@
 #include <vector>
 #include <algorithm>
 #include <string>
+#include <unordered_map>
+
+// ============================================================
+// canonical name registry
+// G4 material name → legend_theia registry key
+// ============================================================
+
+static const std::unordered_map<std::string, std::string> kCanonicalNames = {
+    {"liquid_argon",           "lar"},
+    {"EnrichedGermanium0.076", "germanium_natural"},
+    {"NaturalGermanium",       "germanium_natural"},
+    {"PEN",                    "pen"},
+    {"TPB",                    "tpb"},
+    {"BCF91A_core",            "bcf91a_core"},
+    {"BCF91A_cladding1",       "bcf91a_cladding_1"},
+    {"Copper",                 "copper"},
+    {"Tetratex",               "tetratex"},
+    {"FusedSilica",            "silica_fused"},
+    {"SiPM_photocathode",      "sipm_photocathode"},
+};
 
 // ============================================================
 // helper structure
@@ -150,6 +170,21 @@ void MaterialExporter::Export(
         out << "      \"name\": \""
             << mat->GetName()
             << "\",\n";
+
+        // ----------------------------------------------------
+        // canonical name lookup
+        // ----------------------------------------------------
+
+        {
+            auto it = kCanonicalNames.find(std::string(mat->GetName()));
+            std::string canon = (it != kCanonicalNames.end())
+                ? it->second
+                : std::string(mat->GetName()); // fallback: use G4 name as-is
+
+            out << "      \"canonical_name\": \""
+                << canon
+                << "\",\n";
+        }
 
         out << "      \"density_g_cm3\": "
             << mat->GetDensity() / (g / cm3)

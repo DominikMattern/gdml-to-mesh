@@ -2,10 +2,14 @@
 
 #include "DetectorAssembly.hh"
 #include "OpticalInterface.hh"
+#include "InterfaceExtractor.hh"
 
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Tool.hxx>
+
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
 
 #include <StlAPI_Writer.hxx>
 
@@ -39,12 +43,11 @@ void SurfaceMesher::MeshInterfaces(
         << std::endl;
 
     // --------------------------------------------------------
-    // create debug output directory
+    // create output directories
     // --------------------------------------------------------
 
-    fs::create_directories(
-        "cad/interfaces"
-    );
+    fs::create_directories("cad/interfaces");
+    fs::create_directories("metadata");
 
     // --------------------------------------------------------
     // loop over interfaces
@@ -171,20 +174,27 @@ void SurfaceMesher::MeshInterfaces(
             if (triangulation.IsNull())
                 continue;
 
-            // ------------------------------------------------
-            // count mesh vertices
-            // ------------------------------------------------
-
             total_vertices +=
                 triangulation->NbNodes();
-
-            // ------------------------------------------------
-            // count mesh triangles
-            // ------------------------------------------------
 
             total_triangles +=
                 triangulation->NbTriangles();
         }
+
+        // ----------------------------------------------------
+        // compute surface area (mm²)
+        // ----------------------------------------------------
+
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(iface.boundary, props);
+        double area_mm2 = props.Mass();
+
+        // ----------------------------------------------------
+        // store back onto the interface struct
+        // ----------------------------------------------------
+
+        iface.n_triangles = (int)total_triangles;
+        iface.area_mm2    = area_mm2;
 
         // ----------------------------------------------------
         // report
@@ -210,6 +220,9 @@ void SurfaceMesher::MeshInterfaces(
             << "  triangles  = "
             << total_triangles
             << "\n"
+            << "  area_mm2   = "
+            << area_mm2
+            << "\n"
             << "  brep file  = "
             << brep_name
             << "\n"
@@ -222,4 +235,11 @@ void SurfaceMesher::MeshInterfaces(
     std::cout
         << "Finished interface meshing.\n"
         << std::endl;
+
+    // --------------------------------------------------------
+    // write interfaces.json now that all stats are populated
+    // --------------------------------------------------------
+
+    InterfaceExtractor extractor;
+    extractor.WriteInterfacesJSON(assembly, ".");
 }

@@ -1,4 +1,8 @@
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 cmake_minimum_required(VERSION 3.16)
+
+# Set policies to avoid compatibility warnings/errors with dependencies
+cmake_policy(VERSION 3.16)
 
 project(geant4_extract LANGUAGES CXX)
 
@@ -54,6 +58,20 @@ target_link_libraries(cnpy PUBLIC
 )
 
 # ============================================================
+# nlohmann_json using FetchContent
+# ============================================================
+
+include(FetchContent)
+
+FetchContent_Declare(
+    json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.2  # or use latest stable tag
+)
+
+FetchContent_MakeAvailable(json)
+
+# ============================================================
 # OCC mesher
 # ============================================================
 
@@ -63,8 +81,10 @@ add_executable(occ_mesher
     src/SolidConverter.cc
     src/AssemblyBuilder.cc
     src/MaterialExporter.cc
+    src/SurfaceExporter.cc            # exports metadata/surfaces.json
     src/InterfaceExtractor.cc
     src/SurfaceMesher.cc
+    src/VolumeMetadataExporter.cc
 )
 
 target_include_directories(occ_mesher PUBLIC
@@ -75,6 +95,7 @@ target_link_libraries(occ_mesher
     cnpy
     ${Geant4_LIBRARIES}
     ${OpenCASCADE_LIBRARIES}
+    nlohmann_json::nlohmann_json      # Link JSON library
 )
 
 # ============================================================

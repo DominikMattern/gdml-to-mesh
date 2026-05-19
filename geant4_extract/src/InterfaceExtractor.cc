@@ -10,8 +10,14 @@
 
 #include <TopoDS_Shape.hxx>
 
+#include <nlohmann/json.hpp>
+
+#include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <string>
+
+using json = nlohmann::json;
 
 // ============================================================
 // bbox overlap helper
@@ -187,4 +193,95 @@ void InterfaceExtractor::Extract(
         << "\nTotal interfaces found: "
         << assembly.interfaces.size()
         << std::endl;
+}
+
+// ============================================================
+// write metadata/interfaces.json
+// called after SurfaceMesher has populated n_triangles/area_mm2
+// ============================================================
+
+void InterfaceExtractor::WriteInterfacesJSON(
+    const DetectorAssembly& assembly,
+    const std::string& outDir)
+{
+    json arr = json::array();
+
+    for (const auto& iface : assembly.interfaces) {
+
+        // ----------------------------------------------------
+        // orient sides: lv_inside = non-LAr, lv_outside = LAr
+        // convention matches design doc §3.1
+        // ----------------------------------------------------
+
+        bool A_is_lar = (iface.materialA == "liquid_argon");
+
+        std::string lv_inside    = A_is_lar ? iface.nameB     : iface.nameA;
+        std::string lv_outside   = A_is_lar ? iface.nameA     : iface.nameB;
+        std::string mat_inside   = A_is_lar ? iface.materialB : iface.materialA;
+        std::string mat_outside  = A_is_lar ? iface.materialA : iface.materialB;
+
+        // ----------------------------------------------------
+        // surface type classification (v0 rules, design doc §1)
+        //
+        // Classify by MATERIAL not by LV name to avoid
+        // substring collisions (e.g. "pen_bege_pv" contains
+        // "bege" but is PEN, not germanium).
+        //
+        //   germanium → blackbody  (HPGe, v0 approximation)
+        //   sipm name → detector   (sensitive, gets detector_id)
+        //   everything else → specular
+        //     covers PEN, TPB, fibers, copper, tetratex, etc.
+        //     WLS and diffuse surfaces are deferred to v1
+        // ----------------------------------------------------
+
+        std::string surface = "specular";
+        json        det_id  = nullptr;
+
+        if (mat_inside == "EnrichedGermanium0.076" ||
+            mat_inside == "NaturalGermanium")
+        {
+            surface = "blackbody";
+        }
+        else if (lv_inside.find("sipm") != std::string::npos)
+        {
+            surface = "detector";
+            det_id  = iface.id;
+        }
+        // else: specular — PEN, fibers, copper, world boundary, etc.
+
+        // ----------------------------------------------------
+        // build JSON entry
+        // ----------------------------------------------------
+
+        json entry;
+        entry["id"]               = iface.id;
+        entry["stl"]              = "cad/interfaces/interface_"
+                                     + std::to_string(iface.id) + ".stl";
+        entry["lv_inside"]        = lv_inside;
+        entry["lv_outside"]       = lv_outside;
+        entry["material_inside"]  = mat_inside;
+        entry["material_outside"] = mat_outside;
+        entry["surface"]          = surface;
+        entry["detector_id"]      = det_id;
+        entry["n_triangles"]      = iface.n_triangles;
+        entry["area_mm2"]         = iface.area_mm2;
+
+        arr.push_back(entry);
+    }
+
+    // --------------------------------------------------------
+    // write file
+    // --------------------------------------------------------
+
+    std::string path = outDir + "/metadata/interfaces.json";
+    std::ofstream f(path);
+
+    if (!f) {
+        std::cerr << "ERROR: could not write " << path << std::endl;
+        return;
+    }
+
+    f << std::setw(2) << arr << std::endl;
+
+    std::cout << "Wrote " << path << std::endl;
 }

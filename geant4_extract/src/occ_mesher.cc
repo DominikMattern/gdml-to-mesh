@@ -3,6 +3,7 @@
 #include "SolidConverter.hh"
 #include "AssemblyBuilder.hh"
 #include "MaterialExporter.hh"
+#include "SurfaceExporter.hh"
 #include "InterfaceExtractor.hh"
 #include "SurfaceMesher.hh"
 
@@ -64,27 +65,30 @@ void OCCMesher::run(
     fs::current_path(old_cwd);
 
     // ------------------------------------------------------------
-    // export materials
+    // create output directories
     // ------------------------------------------------------------
 
-    fs::create_directories(
-        "metadata"
-    );
+    fs::create_directories("metadata");
+    fs::create_directories("cad");
+
+    // ------------------------------------------------------------
+    // export materials
+    // ------------------------------------------------------------
 
     MaterialExporter materialExporter;
 
     materialExporter.Export(
-
         "metadata/materials.json"
     );
 
     // ------------------------------------------------------------
-    // create CAD output directory
+    // export optical surfaces
+    // (must happen after GDML parse, while G4 surface tables live)
     // ------------------------------------------------------------
 
-    fs::create_directories(
-        "cad"
-    );
+    SurfaceExporter surfaceExporter;
+
+    surfaceExporter.Export(".");
 
     // ------------------------------------------------------------
     // build full detector assembly

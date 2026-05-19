@@ -1,0 +1,26 @@
+[
+  {
+    "area_mm2": 15216.947293105,
+    "detector_id": null,
+    "id": 0,
+    "lv_inside": "bege_pv",
+    "lv_outside": "lar_pv",
+    "material_inside": "EnrichedGermanium0.076",
+    "material_outside": "liquid_argon",
+    "n_triangles": 2688,
+    "stl": "cad/interfaces/interface_0.stl",
+    "surface": "blackbody"
+  },
+  {
+    "area_mm2": 40244.587290648655,
+    "detector_id": null,
+    "id": 1,
+    "lv_inside": "pen_bege_pv",
+    "lv_outside": "lar_pv",
+    "material_inside": "PEN",
+    "material_outside": "liquid_argon",
+    "n_triangles": 3224,
+    "stl": "cad/interfaces/interface_1.stl",
+    "surface": "specular"
+  }
+]
