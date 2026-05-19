@@ -85,6 +85,7 @@ add_executable(occ_mesher
     src/InterfaceExtractor.cc
     src/SurfaceMesher.cc
     src/VolumeMetadataExporter.cc
+    src/VolumeSTLExporter.cc
 )
 
 target_include_directories(occ_mesher PUBLIC
