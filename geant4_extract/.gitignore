@@ -1,0 +1,7 @@
+# generated outputs
+cad/
+build/
+metadata/
+*.brep
+*.stl
+*.png
