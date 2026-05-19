@@ -6,6 +6,7 @@
 #include "SurfaceExporter.hh"
 #include "InterfaceExtractor.hh"
 #include "SurfaceMesher.hh"
+#include "VolumeSTLExporter.hh"
 
 #include <G4GDMLParser.hh>
 #include <G4LogicalVolume.hh>
@@ -111,6 +112,14 @@ void OCCMesher::run(
     DetectorAssembly detector =
 
         builder.Build(world);
+
+    // ------------------------------------------------------------
+    // export key volumes as STL for the Python visualizer
+    // ------------------------------------------------------------
+
+    VolumeSTLExporter volumeExporter;
+
+    volumeExporter.Export(detector, "cad/volumes");
 
     // ------------------------------------------------------------
     // extract touching interfaces

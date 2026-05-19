@@ -22,4 +22,8 @@ struct OpticalInterface {
     // populated by SurfaceMesher
     int    n_triangles = 0;
     double area_mm2    = 0.0;
+
+    // populated by InterfaceExtractor::Extract
+    // "blackbody" | "specular" | "detector"
+    std::string surface_hint = "specular";
 };
