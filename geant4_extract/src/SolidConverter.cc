@@ -3,6 +3,8 @@
 #include <G4Box.hh>
 #include <G4DisplacedSolid.hh>
 #include <G4GenericPolycone.hh>
+#include <G4Orb.hh>
+#include <G4Sphere.hh>
 #include <G4SubtractionSolid.hh>
 #include <G4SystemOfUnits.hh>
 #include <G4ThreeVector.hh>
@@ -18,6 +20,7 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRepPrimAPI_MakeSphere.hxx>
 
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Wire.hxx>
@@ -152,6 +155,38 @@ TopoDS_Shape SolidConverter::Convert(
             outer,
             inner
         );
+    }
+
+    // --------------------------------------------------------
+    // orb (full sphere)
+    // --------------------------------------------------------
+
+    if (auto* orb =
+        dynamic_cast<G4Orb*>(solid)) {
+
+        double r = orb->GetRadius() / mm;
+
+        return BRepPrimAPI_MakeSphere(r).Shape();
+    }
+
+    // --------------------------------------------------------
+    // sphere (spherical shell / sector)
+    // --------------------------------------------------------
+
+    if (auto* sph =
+        dynamic_cast<G4Sphere*>(solid)) {
+
+        double rmin = sph->GetInnerRadius() / mm;
+        double rmax = sph->GetOuterRadius() / mm;
+
+        // full sphere with no inner cavity
+        if (rmin <= 0.0)
+            return BRepPrimAPI_MakeSphere(rmax).Shape();
+
+        // hollow sphere: outer minus inner
+        TopoDS_Shape outer = BRepPrimAPI_MakeSphere(rmax).Shape();
+        TopoDS_Shape inner = BRepPrimAPI_MakeSphere(rmin).Shape();
+        return BRepAlgoAPI_Cut(outer, inner);
     }
 
     // --------------------------------------------------------

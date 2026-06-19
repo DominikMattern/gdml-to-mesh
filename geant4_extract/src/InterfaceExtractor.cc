@@ -4,11 +4,34 @@
 #include <OpticalInterface.hh>
 
 #include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
 
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
 
+#include <BRepTools.hxx>
+#include <BRepClass3d.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Compound.hxx>
+
+#include <TopExp_Explorer.hxx>
+#include <TopAbs_ShapeEnum.hxx>
+#include <TopAbs_Orientation.hxx>
+
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepLProp_SLProps.hxx>
+#include <BRep_Tool.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
+
+#include <BRepClass3d_SolidClassifier.hxx>
+
+#include <gp_Pnt.hxx>
+#include <gp_Dir.hxx>
 
 #include <nlohmann/json.hpp>
 
@@ -16,6 +39,9 @@
 #include <iostream>
 #include <iomanip>
 #include <string>
+#include <map>
+#include <unordered_map>
+#include <vector>
 
 using json = nlohmann::json;
 
@@ -24,11 +50,9 @@ using json = nlohmann::json;
 // ============================================================
 
 static bool BoxesOverlap(
-
     const TopoDS_Shape& a,
     const TopoDS_Shape& b
 ) {
-
     Bnd_Box boxA;
     Bnd_Box boxB;
 
@@ -39,140 +63,516 @@ static bool BoxesOverlap(
 }
 
 // ============================================================
-// classify a volume that touches LAr
-// returns "blackbody" | "specular" | "detector" | "" (skip)
+// ExtractSurface — convert SOLID result to outer shell
+//
+// BRepAlgoAPI_Common(A, B) returns a SOLID when A is fully
+// contained within B.  SurfaceMesher skips solids, so we
+// extract the outer shell (which is the actual interface).
+// For already-shell/face results this is a no-op.
 // ============================================================
 
-static std::string ClassifyVolume(const VolumeInstance& vol)
+static TopoDS_Shape ExtractSurface(const TopoDS_Shape& shape)
 {
-    const std::string& mat  = vol.material;
-    const std::string& name = vol.name;
+    if (shape.ShapeType() == TopAbs_SOLID)
+        return BRepClass3d::OuterShell(TopoDS::Solid(shape));
 
-    // germanium detectors — blackbody in v0
-    if (mat == "EnrichedGermanium0.076" ||
-        mat == "NaturalGermanium")
-        return "blackbody";
-
-    // PEN encapsulations — specular in v0 (WLS deferred to v1)
-    if (mat == "PEN")
-        return "specular";
-
-    // TPB fiber coatings — specular in v0 (diffuse/WLS deferred to v1)
-    if (mat == "tpb_on_fibers" ||
-        name.find("fiber_IB") != std::string::npos ||
-        name.find("fiber_coating") != std::string::npos)
-        return "specular";
-
-// SiPM photocathodes — detector (silicon only)
-    if (mat == "metal_silicon")
-        return "detector";
-
-    // SiPM copper wraps — blackbody
-    if (mat == "metal_copper")
-        return "blackbody";
-
-    // skip everything else (pmma, ps_fibers, copper, world, etc.)
-    return "";
+    return shape;
 }
 
 // ============================================================
-// extract interfaces
+// HasRealSurface — reject null / empty-COMPOUND / degenerate
+// (edge-or-vertex-only) intersection results.
+//
+// An empty TopoDS_Compound is NOT null, so the old
+// `if (result.IsNull())` guard let zero-area touching results
+// through. Require at least one face and a total area above a
+// small floor.
+// ============================================================
+
+static bool HasRealSurface(const TopoDS_Shape& s, double area_floor_mm2)
+{
+    if (s.IsNull()) return false;
+
+    TopExp_Explorer exp(s, TopAbs_FACE);
+    if (!exp.More()) return false;             // empty COMPOUND → 0 faces
+
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(s, props);
+    return props.Mass() > area_floor_mm2;
+}
+
+// ============================================================
+// NormalPointsInto — sample a point + (orientation-corrected)
+// normal on the first face of `boundary`, step 1 µm along it,
+// and classify against `classifyAgainst`.
+//
+// Returns true if the outward normal points INTO that solid.
+// `ok` is false when no face / no defined normal (caller should
+// fall back).
+// ============================================================
+
+static bool NormalPointsInto(const TopoDS_Shape& boundary,
+                             const TopoDS_Shape& classifyAgainst,
+                             bool& ok)
+{
+    ok = false;
+
+    TopExp_Explorer exp(boundary, TopAbs_FACE);
+    if (!exp.More()) return false;
+
+    TopoDS_Face face = TopoDS::Face(exp.Current());
+    BRepAdaptor_Surface surf(face);
+
+    // BRepTools::UVBounds gives the trimmed-face bounds, tighter
+    // than BRepAdaptor_Surface::First/LastUParameter which returns
+    // the bounds of the underlying (untrimmed) surface.
+    double u1, u2, v1, v2;
+    BRepTools::UVBounds(face, u1, u2, v1, v2);
+    double u = 0.5 * (u1 + u2);
+    double v = 0.5 * (v1 + v2);
+
+    BRepLProp_SLProps props(surf, u, v, 1, 1e-7);
+    if (!props.IsNormalDefined()) return false;
+
+    gp_Pnt pt;
+    surf.D0(u, v, pt);
+    gp_Dir n = props.Normal();
+
+    // BRepLProp returns the parametric surface normal and ignores
+    // the TopoDS orientation flag — apply it manually.
+    if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
+
+    constexpr double eps = 1e-3;  // 1 µm in mm
+    gp_Pnt test(
+        pt.X() + eps * n.X(),
+        pt.Y() + eps * n.Y(),
+        pt.Z() + eps * n.Z()
+    );
+
+    BRepClass3d_SolidClassifier clf;
+    clf.Load(classifyAgainst);
+    clf.Perform(test, 1e-7);
+
+    ok = true;
+    return clf.State() == TopAbs_IN;
+}
+
+// ============================================================
+// Orientation results: normals point from inside toward outside.
+// ============================================================
+
+struct OrientResult {
+    TopoDS_Shape              boundary;
+    const VolumeInstance*     inside;
+    const VolumeInstance*     outside;
+};
+
+// ============================================================
+// OrientInterfaceClassifier — sibling↔sibling case.
+//
+// Labels follow the normal direction (the volume the normal
+// points toward is lv_outside). For detector interfaces the
+// detector is forced to lv_inside; if it would end up outside
+// the mesh winding is reversed. This reproduces the original
+// OrientInterface behaviour exactly.
+// ============================================================
+
+static OrientResult OrientInterfaceClassifier(
+    const TopoDS_Shape&   boundary,
+    const VolumeInstance& A,
+    const VolumeInstance& B,
+    bool                  A_is_detector,
+    bool                  B_is_detector)
+{
+    bool ok = false;
+    bool test_in_B = NormalPointsInto(boundary, B.shape, ok);
+    if (!ok) return {boundary, &A, &B};  // fallback
+
+    const VolumeInstance* vol_in  = test_in_B ? &A : &B;
+    const VolumeInstance* vol_out = test_in_B ? &B : &A;
+
+    if (!A_is_detector && !B_is_detector)
+        return {boundary, vol_in, vol_out};
+
+    bool detector_is_inside =
+        (A_is_detector && vol_in == &A) ||
+        (B_is_detector && vol_in == &B);
+
+    if (detector_is_inside)
+        return {boundary, vol_in, vol_out};
+
+    // Detector ended up as lv_outside → flip mesh, swap labels.
+    TopoDS_Shape flipped = boundary;
+    flipped.Reverse();
+    return {flipped, vol_out, vol_in};
+}
+
+// ============================================================
+// OrientInterfaceForced — mother↔daughter (containment) case.
+//
+// The mother is always lv_outside, the daughter lv_inside
+// (which is also what optical detectors require). The mesh
+// winding is made deterministic: the normal must point from the
+// daughter into the mother; if not, the boundary is reversed.
+// ============================================================
+
+static OrientResult OrientInterfaceForced(
+    const TopoDS_Shape&   boundary,
+    const VolumeInstance& daughter,
+    const VolumeInstance& mother)
+{
+    bool ok = false;
+    bool points_into_mother = NormalPointsInto(boundary, mother.shape, ok);
+
+    TopoDS_Shape oriented = boundary;
+    if (ok && !points_into_mother)
+        oriented.Reverse();
+
+    return {oriented, &daughter, &mother};
+}
+
+// ============================================================
+// EnlargedBox — bbox of a shape inflated by the fuzzy gap so
+// that exactly-touching / sub-µm-separated shapes are not culled.
+// ============================================================
+
+static Bnd_Box EnlargedBox(const TopoDS_Shape& s, double gap)
+{
+    Bnd_Box b;
+    BRepBndLib::Add(s, b);
+    b.Enlarge(gap);
+    return b;
+}
+
+// ============================================================
+// FindSharedFaces — detect coincident faces between two solids.
+//
+// Iterates face pairs (bbox pre-filtered) and runs a 2D
+// face-on-face BRepAlgoAPI_Common with a fuzzy value. Coincident
+// faces yield a real-area patch; these are merged into one
+// compound. Returns a null shape if no genuine shared face.
+// ============================================================
+
+static TopoDS_Shape FindSharedFaces(const TopoDS_Shape& solidA,
+                                    const TopoDS_Shape& solidB,
+                                    double fuzzy_mm,
+                                    double area_floor_mm2)
+{
+    std::vector<TopoDS_Face> facesA, facesB;
+    std::vector<Bnd_Box>     boxA,   boxB;
+
+    for (TopExp_Explorer e(solidA, TopAbs_FACE); e.More(); e.Next()) {
+        TopoDS_Face f = TopoDS::Face(e.Current());
+        facesA.push_back(f);
+        boxA.push_back(EnlargedBox(f, fuzzy_mm));
+    }
+    for (TopExp_Explorer e(solidB, TopAbs_FACE); e.More(); e.Next()) {
+        TopoDS_Face f = TopoDS::Face(e.Current());
+        facesB.push_back(f);
+        boxB.push_back(EnlargedBox(f, fuzzy_mm));
+    }
+
+    BRep_Builder builder;
+    TopoDS_Compound out;
+    builder.MakeCompound(out);
+    bool any = false;
+
+    for (size_t a = 0; a < facesA.size(); ++a) {
+        for (size_t b = 0; b < facesB.size(); ++b) {
+
+            if (boxA[a].IsOut(boxB[b])) continue;   // face-level cull
+
+            BRepAlgoAPI_Common common(facesA[a], facesB[b]);
+            common.SetFuzzyValue(fuzzy_mm);
+            common.Build();
+            if (!common.IsDone()) continue;
+
+            TopoDS_Shape r = common.Shape();
+            if (!HasRealSurface(r, area_floor_mm2)) continue;
+
+            builder.Add(out, r);
+            any = true;
+        }
+    }
+
+    return any ? TopoDS_Shape(out) : TopoDS_Shape();
+}
+
+// ============================================================
+// SubtractPatches — remove shared sibling patches from a
+// mother↔daughter boundary so each surface region belongs to
+// exactly one interface (no double coverage).
+//
+// Works face-by-face (each cut is a coplanar 2D operation,
+// the robust regime). On a failed/ineffective cut the full face
+// is kept and a warning is logged — never silently wrong.
+// ============================================================
+
+static TopoDS_Shape SubtractPatches(
+    const TopoDS_Shape&                    boundary,
+    const std::vector<TopoDS_Shape>&       patches,
+    double                                 fuzzy_mm,
+    double                                 area_floor_mm2,
+    int                                    iface_id,
+    bool&                                  warned)
+{
+    if (patches.empty()) return boundary;   // fast path: no sibling contact
+
+    std::vector<Bnd_Box> pbox(patches.size());
+    double sum_patch_area = 0.0;
+    for (size_t k = 0; k < patches.size(); ++k) {
+        pbox[k] = EnlargedBox(patches[k], fuzzy_mm);
+        GProp_GProps pp;
+        BRepGProp::SurfaceProperties(patches[k], pp);
+        sum_patch_area += pp.Mass();
+    }
+
+    BRep_Builder builder;
+    TopoDS_Compound out;
+    builder.MakeCompound(out);
+
+    double removed_area = 0.0;   // how much surface the cuts actually removed
+
+    for (TopExp_Explorer e(boundary, TopAbs_FACE); e.More(); e.Next()) {
+        TopoDS_Face f  = TopoDS::Face(e.Current());
+        Bnd_Box     fb = EnlargedBox(f, fuzzy_mm);
+
+        // collect patches whose bbox overlaps this face's bbox. Note a
+        // bbox overlap does NOT imply coplanarity (a perpendicular
+        // neighbour face shares an edge); the Cut simply removes nothing
+        // for non-coplanar patches, which is correct.
+        TopoDS_Compound local;
+        builder.MakeCompound(local);
+        bool hasLocal = false;
+        for (size_t k = 0; k < patches.size(); ++k) {
+            if (fb.IsOut(pbox[k])) continue;
+            builder.Add(local, patches[k]);
+            hasLocal = true;
+        }
+
+        if (!hasLocal) {
+            builder.Add(out, f);   // face fully borders the mother
+            continue;
+        }
+
+        GProp_GProps fprops;
+        BRepGProp::SurfaceProperties(f, fprops);
+        double orig_area = fprops.Mass();
+
+        BRepAlgoAPI_Cut cut(f, local);
+        cut.SetFuzzyValue(fuzzy_mm);
+        cut.Build();
+
+        if (!cut.IsDone()) {
+            // fragile cut failed → keep whole face, warn (possible overlap)
+            builder.Add(out, f);
+            if (!warned) {
+                std::cout << "  [WARN] interface " << iface_id
+                          << ": coplanar Cut failed; keeping full "
+                          << "mother-daughter face (possible double coverage)\n";
+                warned = true;
+            }
+            continue;
+        }
+
+        TopoDS_Shape rem = cut.Shape();
+        if (rem.IsNull()) {           // face fully shared with sibling → drop
+            removed_area += orig_area;
+            continue;
+        }
+
+        GProp_GProps rprops;
+        BRepGProp::SurfaceProperties(rem, rprops);
+        double rem_area = rprops.Mass();
+
+        removed_area += (orig_area - rem_area);
+
+        if (rem_area <= area_floor_mm2)
+            continue;                 // fully shared → drop
+
+        builder.Add(out, rem);
+    }
+
+    // aggregate sanity check: every shared patch should have been removed
+    // from exactly one daughter face. If much less area was removed than the
+    // patches cover, some coplanar overlap was missed → possible double
+    // coverage. (A per-face check would false-positive on perpendicular
+    // neighbour faces that merely share an edge with a patch.)
+    if (removed_area < sum_patch_area - area_floor_mm2 && !warned) {
+        std::cout << "  [WARN] interface " << iface_id
+                  << ": subtracted " << removed_area << " mm² but siblings share "
+                  << sum_patch_area << " mm² (possible double coverage)\n";
+        warned = true;
+    }
+
+    return out;
+}
+
+// ============================================================
+// Extract
 // ============================================================
 
 void InterfaceExtractor::Extract(
-
-    DetectorAssembly& assembly
+    DetectorAssembly& assembly,
+    const std::map<std::string, int>& optical_detectors,
+    double fuzzy_mm
 ) {
+    auto& volumes = assembly.volumes;
 
-    auto& volumes =
-        assembly.volumes;
+    constexpr double kAreaFloor = 1e-6;   // mm² — reject degenerate patches
 
     std::cout
-        << "\nChecking interfaces...\n"
+        << "\nChecking interfaces (fuzzy = " << fuzzy_mm << " mm)...\n"
         << std::endl;
 
-    for (size_t i = 0;
-         i < volumes.size();
-         ++i)
-    {
+    // --------------------------------------------------------
+    // index maps. volumes[k].id is NOT guaranteed to equal k if
+    // a node was skipped, so resolve ids through an explicit map.
+    // children_of is ordered (std::map) for deterministic output.
+    // --------------------------------------------------------
 
-        for (size_t j = i + 1;
-             j < volumes.size();
-             ++j)
-        {
+    std::unordered_map<uint64_t, size_t> id_to_index;
+    for (size_t i = 0; i < volumes.size(); ++i)
+        id_to_index[volumes[i].id] = i;
 
-            const auto& A = volumes[i];
-            const auto& B = volumes[j];
+    std::map<uint64_t, std::vector<size_t>> children_of;
+    for (size_t i = 0; i < volumes.size(); ++i)
+        children_of[volumes[i].mother_id].push_back(i);
 
-            // ------------------------------------------------
-            // one side must be LAr, the other a classified partner
-            // ------------------------------------------------
+    // shared sibling patches accumulated per daughter VOLUME id, to be
+    // cut out of the corresponding mother↔daughter boundaries
+    std::unordered_map<uint64_t, std::vector<TopoDS_Shape>> shared_per_daughter;
 
-            bool A_is_lar = (A.material == "liquid_argon");
-            bool B_is_lar = (B.material == "liquid_argon");
+    auto is_det = [&](const VolumeInstance& v) {
+        return optical_detectors.count(v.name) > 0;
+    };
 
-            if (!A_is_lar && !B_is_lar)
+    auto emit = [&](const VolumeInstance& A, const VolumeInstance& B,
+                    const OrientResult& orient, bool A_det, bool B_det) {
+        OpticalInterface iface;
+        iface.id        = (int)assembly.interfaces.size();
+        iface.volumeA   = (int)A.id;
+        iface.volumeB   = (int)B.id;
+        iface.nameA     = A.name;
+        iface.nameB     = B.name;
+        iface.materialA = A.material;
+        iface.materialB = B.material;
+        iface.lv_inside   = orient.inside->name;
+        iface.lv_outside  = orient.outside->name;
+        iface.mat_inside  = orient.inside->material;
+        iface.mat_outside = orient.outside->material;
+        iface.is_detector = A_det || B_det;
+        if (A_det)      iface.detector_channel = optical_detectors.at(A.name);
+        else if (B_det) iface.detector_channel = optical_detectors.at(B.name);
+        iface.boundary = orient.boundary;
+        assembly.interfaces.push_back(iface);
+
+        std::cout
+            << "INTERFACE " << iface.id << ":\n  "
+            << iface.lv_inside  << " (" << iface.mat_inside  << ")\n"
+            << "  --> "
+            << iface.lv_outside << " (" << iface.mat_outside << ")\n"
+            << (iface.is_detector
+                ? "  detector channel: " + std::to_string(iface.detector_channel) + "\n"
+                : "")
+            << std::endl;
+    };
+
+    for (const auto& group : children_of) {
+        uint64_t mother_id = group.first;
+        const std::vector<size_t>& daughters = group.second;
+
+        // ====================================================
+        // (1) sibling ↔ sibling: shared coincident faces
+        // ====================================================
+
+        for (size_t a = 0; a < daughters.size(); ++a) {
+            for (size_t b = a + 1; b < daughters.size(); ++b) {
+                const VolumeInstance& A = volumes[daughters[a]];
+                const VolumeInstance& B = volumes[daughters[b]];
+
+                // gap-inflated bbox cull so touching pairs survive
+                if (EnlargedBox(A.shape, fuzzy_mm)
+                        .IsOut(EnlargedBox(B.shape, fuzzy_mm)))
+                    continue;
+
+                TopoDS_Shape shared =
+                    FindSharedFaces(A.shape, B.shape, fuzzy_mm, kAreaFloor);
+
+                if (!HasRealSurface(shared, kAreaFloor))
+                    continue;
+
+                bool A_det = is_det(A);
+                bool B_det = is_det(B);
+
+                OrientResult orient =
+                    OrientInterfaceClassifier(shared, A, B, A_det, B_det);
+
+                emit(A, B, orient, A_det, B_det);
+
+                // cut this patch out of BOTH daughters' mother boundaries
+                shared_per_daughter[A.id].push_back(shared);
+                shared_per_daughter[B.id].push_back(shared);
+            }
+        }
+
+        // ====================================================
+        // (2) mother ↔ daughter: containment
+        //     (top-level volumes under the excluded World have
+        //      mother_id == kNoMother and get no mother interface)
+        // ====================================================
+
+        if (mother_id == VolumeInstance::kNoMother)
+            continue;
+
+        auto mit = id_to_index.find(mother_id);
+        if (mit == id_to_index.end())
+            continue;
+        const VolumeInstance& mother = volumes[mit->second];
+        bool mother_det = is_det(mother);
+
+        for (size_t di : daughters) {
+            const VolumeInstance& daughter = volumes[di];
+
+            if (!BoxesOverlap(mother.shape, daughter.shape))
                 continue;
 
-            const VolumeInstance& other =
-                A_is_lar ? B : A;
-
-            std::string hint = ClassifyVolume(other);
-
-            if (hint.empty())
-                continue;
-
-            // ------------------------------------------------
-            // bbox reject — fast cull
-            // ------------------------------------------------
-
-            if (!BoxesOverlap(A.shape, B.shape))
-                continue;
-
-            // ------------------------------------------------
-            // OCC Boolean intersection
-            // ------------------------------------------------
-
-            BRepAlgoAPI_Common common(A.shape, B.shape);
-
+            BRepAlgoAPI_Common common(mother.shape, daughter.shape);
             common.Build();
-
             if (!common.IsDone())
                 continue;
 
             TopoDS_Shape result = common.Shape();
-
             if (result.IsNull())
                 continue;
 
-            // ------------------------------------------------
-            // construct interface object
-            // ------------------------------------------------
+            result = ExtractSurface(result);
+            if (!HasRealSurface(result, kAreaFloor))
+                continue;
 
-            OpticalInterface iface;
+            // remove regions shared with touching siblings (no double coverage)
+            bool warned = false;
+            auto pit = shared_per_daughter.find(daughter.id);
+            TopoDS_Shape boundary =
+                (pit == shared_per_daughter.end())
+                    ? result
+                    : SubtractPatches(result, pit->second, fuzzy_mm,
+                                      kAreaFloor,
+                                      (int)assembly.interfaces.size(), warned);
 
-            iface.id           = assembly.interfaces.size();
-            iface.volumeA      = A.id;
-            iface.volumeB      = B.id;
-            iface.nameA        = A.name;
-            iface.nameB        = B.name;
-            iface.materialA    = A.material;
-            iface.materialB    = B.material;
-            iface.boundary     = result;
-            iface.surface_hint = hint;
+            if (!HasRealSurface(boundary, kAreaFloor))
+                continue;   // whole surface shared away with siblings
 
-            assembly.interfaces.push_back(iface);
+            if (mother_det) {
+                std::cout << "  [WARN] mother volume " << mother.name
+                          << " is an optical detector but forced to lv_outside\n";
+            }
 
-            // ------------------------------------------------
-            // debug output
-            // ------------------------------------------------
+            OrientResult orient =
+                OrientInterfaceForced(boundary, daughter, mother);
 
-            std::cout
-                << "INTERFACE " << iface.id << ":\n  "
-                << A.name << " (" << A.material << ")\n  <-> "
-                << B.name << " (" << B.material << ")\n"
-                << "  surface: " << hint << "\n"
-                << std::endl;
+            // daughter passed as A so the detector channel resolves to it
+            emit(daughter, mother, orient, is_det(daughter), mother_det);
         }
     }
 
@@ -183,7 +583,7 @@ void InterfaceExtractor::Extract(
 }
 
 // ============================================================
-// write metadata/interfaces.json
+// WriteInterfacesJSON
 // called after SurfaceMesher has populated n_triangles/area_mm2
 // ============================================================
 
@@ -195,30 +595,19 @@ void InterfaceExtractor::WriteInterfacesJSON(
 
     for (const auto& iface : assembly.interfaces) {
 
-        // orient: lv_inside = non-LAr, lv_outside = LAr
-        bool A_is_lar = (iface.materialA == "liquid_argon");
-
-        std::string lv_inside    = A_is_lar ? iface.nameB     : iface.nameA;
-        std::string lv_outside   = A_is_lar ? iface.nameA     : iface.nameB;
-        std::string mat_inside   = A_is_lar ? iface.materialB : iface.materialA;
-        std::string mat_outside  = A_is_lar ? iface.materialA : iface.materialB;
-
-        // use hint computed during extraction
-        std::string surface = iface.surface_hint;
-        json        det_id  = nullptr;
-
-        if (surface == "detector")
-            det_id = iface.id;
+        json det_id = nullptr;
+        if (iface.is_detector)
+            det_id = iface.detector_channel;
 
         json entry;
         entry["id"]               = iface.id;
         entry["stl"]              = "cad/interfaces/interface_"
                                     + std::to_string(iface.id) + ".stl";
-        entry["lv_inside"]        = lv_inside;
-        entry["lv_outside"]       = lv_outside;
-        entry["material_inside"]  = mat_inside;
-        entry["material_outside"] = mat_outside;
-        entry["surface"]          = surface;
+        entry["lv_inside"]        = iface.lv_inside;
+        entry["lv_outside"]       = iface.lv_outside;
+        entry["material_inside"]  = iface.mat_inside;
+        entry["material_outside"] = iface.mat_outside;
+        entry["surface"]          = iface.is_detector ? "detector" : "default";
         entry["detector_id"]      = det_id;
         entry["n_triangles"]      = iface.n_triangles;
         entry["area_mm2"]         = iface.area_mm2;
