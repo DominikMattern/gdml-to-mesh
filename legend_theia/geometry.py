@@ -86,8 +86,8 @@ def _detector_efficiency(
 
 
 def _surface_model(
-    g4_surface: dict | None, 
-    matInside: str, 
+    g4_surface: dict | None,
+    matInside: str,
     matOutside: str,
     media: dict[str, Medium],
     wavelength_min: float,
@@ -118,7 +118,7 @@ def _surface_model(
     -------
     Tuple of (model instance, dict of extra Material properties).
     """
-   
+
     # no surface properties specified -> default case
     if g4_surface is None:
         def _has_rindex(name):

@@ -217,11 +217,11 @@ def build_media(
                 _compute_cdf(p["wavelength_nm"], p["values"])
             )
 
-        if ("WLSABSLENGTH" in props or "WLSMEANNUMBERPHOTONS" in props 
+        if ("WLSABSLENGTH" in props or "WLSMEANNUMBERPHOTONS" in props
                 or "WLSTIMECONSTANT" in props or "WLSCOMPONENT" in props):
             volume_model = Fluorescent()
         elif("ABSLENGTH" in props or "RAYLEIGH" in props):
-            volume_model = Attenuating() 
+            volume_model = Attenuating()
         else:
             volume_model = Transparent()
 

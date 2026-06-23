@@ -22,7 +22,7 @@ def load_surfaces(surfaces_json: str | Path) -> dict[tuple[str, str], dict]:
 
     Returns
     -------
-    Dict mapping (lv_inside, lv_outside) → surface entry. For skin suurfaces, 
+    Dict mapping (lv_inside, lv_outside) → surface entry. For skin suurfaces,
     the other lv is stored as None.
     Note: both orderings are stored since border surfaces are directional.
     """

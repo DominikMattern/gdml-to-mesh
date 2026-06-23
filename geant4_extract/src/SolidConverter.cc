@@ -136,7 +136,7 @@ TopoDS_Shape SolidConverter::Convert(
         // A G4Tubs may be a phi-segment (deltaphi < 2pi). OCC's
         // BRepPrimAPI_MakeCylinder sweeps the sector from the ax2 X-direction,
         // so orient X to G4's start-phi; the sector then spans
-        // [sphi, sphi + dphi]. 
+        // [sphi, sphi + dphi].
         gp_Ax2 ax(
             gp_Pnt(0, 0, -h / 2.0),
             gp_Dir(0, 0, 1),
