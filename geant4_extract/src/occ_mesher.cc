@@ -164,12 +164,11 @@ void OCCMesher::run(
     // Fuzzy tolerance for coincident-face detection between touching
     // sibling volumes. Geant4's surface tolerance is world-extent
     // relative and can be unrealistically small/large, so floor it at
-    // 1 µm — small vs. mm-scale geometry, but enough to bridge the
-    // numerical coincidence error of placed shapes.
+    // 0.1 µm 
     double surf_tol_mm =
         G4GeometryTolerance::GetInstance()->GetSurfaceTolerance() / CLHEP::mm;
 
-    double fuzzy_mm = std::max(surf_tol_mm, 1e-3);
+    double fuzzy_mm = std::max(surf_tol_mm, 1e-4);
 
     std::cout << "\nG4 surface tolerance = " << surf_tol_mm
               << " mm; using fuzzy = " << fuzzy_mm << " mm\n";

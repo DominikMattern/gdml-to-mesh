@@ -42,6 +42,7 @@
 #include <map>
 #include <unordered_map>
 #include <vector>
+#include <algorithm>
 
 using json = nlohmann::json;
 
@@ -60,23 +61,6 @@ static bool BoxesOverlap(
     BRepBndLib::Add(b, boxB);
 
     return !boxA.IsOut(boxB);
-}
-
-// ============================================================
-// ExtractSurface — convert SOLID result to outer shell
-//
-// BRepAlgoAPI_Common(A, B) returns a SOLID when A is fully
-// contained within B.  SurfaceMesher skips solids, so we
-// extract the outer shell (which is the actual interface).
-// For already-shell/face results this is a no-op.
-// ============================================================
-
-static TopoDS_Shape ExtractSurface(const TopoDS_Shape& shape)
-{
-    if (shape.ShapeType() == TopAbs_SOLID)
-        return BRepClass3d::OuterShell(TopoDS::Solid(shape));
-
-    return shape;
 }
 
 // ============================================================
@@ -142,7 +126,7 @@ static bool NormalPointsInto(const TopoDS_Shape& boundary,
     // the TopoDS orientation flag — apply it manually.
     if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
 
-    constexpr double eps = 1e-3;  // 1 µm in mm
+    constexpr double eps = 1e-4;  // 0.1 µm in mm
     gp_Pnt test(
         pt.X() + eps * n.X(),
         pt.Y() + eps * n.Y(),
@@ -398,7 +382,13 @@ static TopoDS_Shape SubtractPatches(
     // patches cover, some coplanar overlap was missed → possible double
     // coverage. (A per-face check would false-positive on perpendicular
     // neighbour faces that merely share an edge with a patch.)
-    if (removed_area < sum_patch_area - area_floor_mm2 && !warned) {
+    //
+    // The tolerance is RELATIVE (1 % of the patch area): a coincident curved
+    // face and its cut counterpart are tessellated slightly differently, so a
+    // full removal lands a fraction of a mm² short of the patch area. An
+    // absolute floor would false-alarm on every large curved interface.
+    double agg_tol = std::max(area_floor_mm2, 0.01 * sum_patch_area);
+    if (removed_area < sum_patch_area - agg_tol && !warned) {
         std::cout << "  [WARN] interface " << iface_id
                   << ": subtracted " << removed_area << " mm² but siblings share "
                   << sum_patch_area << " mm² (possible double coverage)\n";
@@ -443,6 +433,11 @@ void InterfaceExtractor::Extract(
     // cut out of the corresponding mother↔daughter boundaries
     std::unordered_map<uint64_t, std::vector<TopoDS_Shape>> shared_per_daughter;
 
+    // emitted interfaces grouped by participating VOLUME id. A flush
+    // daughter looks up its mother's outward interfaces here to
+    // re-attribute ("steal") the surface region it covers.
+    std::unordered_map<uint64_t, std::vector<int>> interfaces_of_volume;
+
     auto is_det = [&](const VolumeInstance& v) {
         return optical_detectors.count(v.name) > 0;
     };
@@ -467,6 +462,9 @@ void InterfaceExtractor::Extract(
         iface.boundary = orient.boundary;
         assembly.interfaces.push_back(iface);
 
+        interfaces_of_volume[A.id].push_back(iface.id);
+        interfaces_of_volume[B.id].push_back(iface.id);
+
         std::cout
             << "INTERFACE " << iface.id << ":\n  "
             << iface.lv_inside  << " (" << iface.mat_inside  << ")\n"
@@ -478,9 +476,97 @@ void InterfaceExtractor::Extract(
             << std::endl;
     };
 
-    for (const auto& group : children_of) {
-        uint64_t mother_id = group.first;
-        const std::vector<size_t>& daughters = group.second;
+    // --------------------------------------------------------
+    // steal_for — re-attribute the part of a mother's OUTWARD
+    // interfaces that a flush daughter D actually occupies.
+    //
+    // For every already-emitted interface M↔X where X lies
+    // OUTSIDE M (sibling of M, or M's own mother — not a child
+    // of M), the region covered by D's flush footprint is cut
+    // out of M↔X and re-emitted as D↔X. Relies on top-down
+    // (BFS) traversal so all M↔X already exist, and recurses
+    // naturally for flush grand-daughters.
+    // --------------------------------------------------------
+
+    auto steal_for = [&](const VolumeInstance& D, const VolumeInstance& M,
+                         const TopoDS_Shape& flush) {
+        auto it = interfaces_of_volume.find(M.id);
+        if (it == interfaces_of_volume.end()) return;
+
+        std::vector<int> snapshot = it->second;  // copy: emit() mutates the map
+
+        for (int idx : snapshot) {
+            int vA = assembly.interfaces[idx].volumeA;
+            int vB = assembly.interfaces[idx].volumeB;
+            int x_id = (vA == (int)M.id) ? vB : vA;
+
+            if (x_id == (int)D.id) continue;          // skip the M↔D interface itself
+            auto xit = id_to_index.find((uint64_t)x_id);
+            if (xit == id_to_index.end()) continue;
+            const VolumeInstance& X = volumes[xit->second];
+
+            // only outward-facing interfaces: X must not be a child of M
+            if (X.mother_id == M.id) continue;
+
+            TopoDS_Shape I_boundary = assembly.interfaces[idx].boundary;
+            TopoDS_Shape stolen =
+                FindSharedFaces(flush, I_boundary, fuzzy_mm, kAreaFloor);
+            if (!HasRealSurface(stolen, kAreaFloor)) continue;
+
+            // (Fix 1) remove the stolen region from M↔X
+            bool warned = false;
+            TopoDS_Shape shrunk =
+                SubtractPatches(I_boundary, {stolen}, fuzzy_mm, kAreaFloor,
+                                idx, warned);
+            assembly.interfaces[idx].boundary = shrunk;  // idx valid; no realloc yet
+
+            if (!HasRealSurface(shrunk, kAreaFloor))
+                std::cout << "  [INFO] interface " << idx
+                          << " fully re-attributed to daughter " << D.name
+                          << " (mother no longer touches " << X.name << " here)\n";
+
+            // (Fix 3) emit D↔X for the stolen patch (sibling-style orientation)
+            bool D_det = is_det(D);
+            bool X_det = is_det(X);
+            OrientResult o = OrientInterfaceClassifier(stolen, D, X, D_det, X_det);
+            emit(D, X, o, D_det, X_det);   // may realloc assembly.interfaces
+        }
+    };
+
+    // --------------------------------------------------------
+    // process mother groups TOP-DOWN (BFS from the root group,
+    // mother_id == kNoMother). Required so a flush daughter can
+    // steal from interfaces created one level up.
+    // --------------------------------------------------------
+
+    std::vector<uint64_t> ordered_mothers;
+    {
+        std::vector<uint64_t> q;
+        if (children_of.count(VolumeInstance::kNoMother))
+            q.push_back(VolumeInstance::kNoMother);
+
+        for (size_t h = 0; h < q.size(); ++h) {
+            uint64_t m = q[h];
+            ordered_mothers.push_back(m);
+            auto cit = children_of.find(m);
+            if (cit == children_of.end()) continue;
+            for (size_t di : cit->second) {
+                uint64_t cid = volumes[di].id;
+                if (children_of.count(cid)) q.push_back(cid);
+            }
+        }
+        // defensive: append any group not reached from the root (tree should
+        // reach all; this only guards against a detached hierarchy)
+        for (const auto& g : children_of) {
+            bool seen = false;
+            for (uint64_t m : ordered_mothers)
+                if (m == g.first) { seen = true; break; }
+            if (!seen) ordered_mothers.push_back(g.first);
+        }
+    }
+
+    for (uint64_t mother_id : ordered_mothers) {
+        const std::vector<size_t>& daughters = children_of.find(mother_id)->second;
 
         // ====================================================
         // (1) sibling ↔ sibling: shared coincident faces
@@ -537,6 +623,20 @@ void InterfaceExtractor::Extract(
             if (!BoxesOverlap(mother.shape, daughter.shape))
                 continue;
 
+            // faces of the daughter that lie flush against the mother's
+            // OUTER wall (the daughter touches M's boundary from inside).
+            // There M has zero thickness: the surface there is really
+            // daughter↔(whatever borders M), not mother↔daughter.
+            TopoDS_Shape flush =
+                FindSharedFaces(mother.shape, daughter.shape, fuzzy_mm, kAreaFloor);
+            bool has_flush = HasRealSurface(flush, kAreaFloor);
+
+            // (Fix 1+3) re-attribute M's outward surface under the flush
+            // footprint to the daughter. Done BEFORE emitting M↔D so the
+            // freshly-created M↔D is not itself a steal target.
+            if (has_flush)
+                steal_for(daughter, mother, flush);
+
             BRepAlgoAPI_Common common(mother.shape, daughter.shape);
             common.Build();
             if (!common.IsDone())
@@ -546,22 +646,36 @@ void InterfaceExtractor::Extract(
             if (result.IsNull())
                 continue;
 
-            result = ExtractSurface(result);
+            // NB: BRepAlgoAPI_Common::Shape() always returns a COMPOUND
+            // (never a bare SOLID) — verified across simple_geometry,
+            // flush tests and the full scarf_pen geometry (1112/1112
+            // results were COMPOUND). SurfaceMesher tessellates the faces
+            // inside it directly; its own SOLID/COMPSOLID skip guard is the
+            // backstop should a future OCC ever return a bare solid.
             if (!HasRealSurface(result, kAreaFloor))
                 continue;
 
-            // remove regions shared with touching siblings (no double coverage)
-            bool warned = false;
+            // patches to cut out of M↔D (no double coverage):
+            //   - regions shared with touching siblings
+            //   - (Fix 2) faces flush with the mother's outer wall, which
+            //     carry no mother material and were re-attributed above
+            std::vector<TopoDS_Shape> patches;
             auto pit = shared_per_daughter.find(daughter.id);
+            if (pit != shared_per_daughter.end())
+                patches = pit->second;
+            if (has_flush)
+                patches.push_back(flush);
+
+            bool warned = false;
             TopoDS_Shape boundary =
-                (pit == shared_per_daughter.end())
+                patches.empty()
                     ? result
-                    : SubtractPatches(result, pit->second, fuzzy_mm,
+                    : SubtractPatches(result, patches, fuzzy_mm,
                                       kAreaFloor,
                                       (int)assembly.interfaces.size(), warned);
 
             if (!HasRealSurface(boundary, kAreaFloor))
-                continue;   // whole surface shared away with siblings
+                continue;   // whole surface shared away with siblings / flush
 
             if (mother_det) {
                 std::cout << "  [WARN] mother volume " << mother.name
@@ -574,6 +688,32 @@ void InterfaceExtractor::Extract(
             // daughter passed as A so the detector channel resolves to it
             emit(daughter, mother, orient, is_det(daughter), mother_det);
         }
+    }
+
+    // --------------------------------------------------------
+    // compaction: a mother↔X interface whose region was FULLY
+    // re-attributed to a flush daughter is left with an empty
+    // boundary. Drop such interfaces and renumber ids 0..N-1 in
+    // emission order (SurfaceMesher/WriteInterfacesJSON key the
+    // STL filename off iface.id). When nothing was fully stolen
+    // this is a no-op and ids are unchanged.
+    // --------------------------------------------------------
+
+    {
+        std::vector<OpticalInterface> kept;
+        kept.reserve(assembly.interfaces.size());
+        for (auto& iface : assembly.interfaces) {
+            if (!HasRealSurface(iface.boundary, kAreaFloor)) {
+                std::cout << "  [INFO] dropping interface " << iface.id
+                          << " (" << iface.lv_inside << " -> "
+                          << iface.lv_outside
+                          << "): fully re-attributed to a flush daughter\n";
+                continue;
+            }
+            iface.id = (int)kept.size();
+            kept.push_back(std::move(iface));
+        }
+        assembly.interfaces = std::move(kept);
     }
 
     std::cout
