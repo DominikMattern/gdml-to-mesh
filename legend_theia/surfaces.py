@@ -22,7 +22,8 @@ def load_surfaces(surfaces_json: str | Path) -> dict[tuple[str, str], dict]:
 
     Returns
     -------
-    Dict mapping (lv_inside, lv_outside) → surface entry.
+    Dict mapping (lv_inside, lv_outside) → surface entry. For skin suurfaces, 
+    the other lv is stored as None.
     Note: both orderings are stored since border surfaces are directional.
     """
     with open(surfaces_json) as f:
@@ -36,6 +37,14 @@ def load_surfaces(surfaces_json: str | Path) -> dict[tuple[str, str], dict]:
             if len(pair) == 2:
                 key_ab = (pair[0], pair[1])
                 key_ba = (pair[1], pair[0])
+                index[key_ab] = surf
+                index[key_ba] = surf
+
+        elif surf.get("type") == "skin":
+            lv = surf.get("lv_skin", [])
+            if len(lv) == 1:
+                key_ab = (lv, None)
+                key_ba = (None, lv)
                 index[key_ab] = surf
                 index[key_ba] = surf
 
@@ -62,4 +71,6 @@ def get_surface_for_interface(
     """
     lv_in  = interface.get("lv_inside", "")
     lv_out = interface.get("lv_outside", "")
-    return surface_index.get((lv_in, lv_out)) or surface_index.get((lv_out, lv_in))
+    return (surface_index.get((lv_in, lv_out)) or surface_index.get((lv_out, lv_in))
+             or surface_index.get((lv_in, None)) or surface_index.get((None, lv_in))
+             or surface_index.get((lv_out, None)) or surface_index.get((None, lv_out)))

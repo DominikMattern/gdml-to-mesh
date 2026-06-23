@@ -16,7 +16,7 @@ from theia.material import Medium
 from theia.lookup import Table
 from theia.model import RayleighScatteringPhaseFunction
 from theia.property import FloatProperty, TableProperty
-from theia.volume import Attenuating, Transparent
+from theia.volume import Attenuating, Transparent, Fluorescent
 import theia.units as u
 
 from .registry import canonical
@@ -43,8 +43,13 @@ def _mfp_to_coef(mfp_mm: np.ndarray) -> np.ndarray:
     """Convert mean free path in mm to absorption/scattering coefficient in 1/m."""
     return 1000.0 / np.clip(mfp_mm, 1e-6, None)
 
+def _compute_cdf(wavelengths, values, num_values=WAVELENGTH_N):
+    cdf = cumulative_trapezoid(values, wavelengths, initial=0)
+    cdf /= cdf[-1]
+    x_values = np.linspace(0, 1, num_values)
+    return np.interp(x_values, wavelengths, cdf)
 
-def _compute_ppf(wavelengths, values, num_values=1024):
+def _compute_ppf(wavelengths, values, num_values=WAVELENGTH_N):
     cdf = cumulative_trapezoid(values, wavelengths, initial=0)
     cdf /= cdf[-1]
     x_values = np.linspace(0, 1, num_values)
@@ -184,7 +189,41 @@ def build_media(
             scint_yield = p["values"][0] * 806554.394 * p["wavelength_nm"][0] * 1e-9 / u.eV
             kwargs["scintillation_yield_ion"] = FloatProperty(float(scint_yield))
 
-        volume_model = Attenuating() if ("ABSLENGTH" in props or "RAYLEIGH" in props) else Transparent()
+        if "RESOLUTIONSCALE" in props:
+            kwargs["scintillation_resolutionscale"] = FloatProperty(
+                float(props["RESOLUTIONSCALE"]["value"])
+            )
+
+        if "WLSABSLENGTH" in props:
+            p = props["WLSABSLENGTH"]
+            kwargs["fluorescence_coef"] = _prop(_mfp_to_coef(_interp(p["wavelength_nm"], p["values"])))
+
+        if "WLSMEANNUMBERPHOTONS" in props:
+            kwargs["fluorescence_efficiency"] = FloatProperty(
+                float(props["WLSMEANNUMBERPHOTONS"]["value"])
+            )
+
+        if "WLSTIMECONSTANT" in props:
+            kwargs["fluorescence_time_shift"] = FloatProperty(
+                float(props["WLSTIMECONSTANT"]["value"])
+            )
+
+        if "WLSCOMPONENT" in props:
+            p = props["WLSCOMPONENT"]
+            kwargs["fluorescence_emission_sampling"] = _prop01(
+                _compute_ppf(p["wavelength_nm"], p["values"])
+            )
+            kwargs["fluorescence_emission_quantile"] = _prop01(
+                _compute_cdf(p["wavelength_nm"], p["values"])
+            )
+
+        if ("WLSABSLENGTH" in props or "WLSMEANNUMBERPHOTONS" in props 
+                or "WLSTIMECONSTANT" in props or "WLSCOMPONENT" in props):
+            volume_model = Fluorescent()
+        elif("ABSLENGTH" in props or "RAYLEIGH" in props):
+            volume_model = Attenuating() 
+        else:
+            volume_model = Transparent()
 
         medium = Medium(canon, (wavelength_min, wavelength_max), kwargs, volume_model)
         media[canon] = medium
