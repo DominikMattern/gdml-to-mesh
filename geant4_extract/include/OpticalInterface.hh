@@ -18,6 +18,10 @@ struct OpticalInterface {
     std::string materialB;
 
     // filled by InterfaceExtractor::Extract
+    // physical volume names (placements) — match border surfaces
+    std::string pv_inside;
+    std::string pv_outside;
+    // logical volume names (definitions) — match skin surfaces
     std::string lv_inside;
     std::string lv_outside;
     std::string mat_inside;
@@ -25,7 +29,7 @@ struct OpticalInterface {
     bool        is_detector      = false;
     int         detector_channel = -1;  // GDML channel id, -1 if not a detector
 
-    // normals point from lv_inside toward lv_outside
+    // normals point from pv_inside toward pv_outside
     TopoDS_Shape boundary;
 
     // filled by SurfaceMesher

@@ -241,6 +241,9 @@ void AssemblyBuilder::Traverse(
                 inst.name =
                     pv->GetName();
 
+                inst.lv_name =
+                    lv->GetName();
+
                 if (lv->GetMaterial()) {
 
                     inst.material =

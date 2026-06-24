@@ -12,6 +12,7 @@ Usage
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -164,6 +165,7 @@ def _surface_model(
                 )
         elif surf_type == "dielectric_metal":
             if finish == "polished":
+                mpt = g4_surface.get("MPT", {})
                 if "REFLECTIVITY" in mpt:
                     r = mpt["REFLECTIVITY"]
                     wl  = r["wavelength_nm"]
@@ -188,6 +190,23 @@ def _surface_model(
             f"Unsupported surface model: {model!r} "
             f"(surface: {g4_surface.get('name', '?')})"
         )
+
+
+def _surface_signature(g4_surface: dict | None) -> str:
+    """
+    Compact, deterministic key capturing everything about a surface that
+    affects the built Material (model / surf_type / finish / MPT).
+
+    Interfaces with the same media and the same signature share one Material.
+    Keying on optical content rather than g4_name means surfaces with identical
+    properties (e.g. all per-fiber border surfaces) collapse to a single
+    Material, while genuinely different surfaces stay separate.
+    """
+    if g4_surface is None:
+        return "none"
+    core = "|".join(str(g4_surface.get(k, "")) for k in ("model", "surf_type", "finish"))
+    mpt  = json.dumps(g4_surface.get("MPT", {}), sort_keys=True)
+    return hashlib.md5((core + "|" + mpt).encode()).hexdigest()[:8]
 
 
 def build_scene(
@@ -255,17 +274,20 @@ def build_scene(
     materials:        dict[str, Material] = {}
     detector_map:     dict[int, int]      = {}
     detector_counter: int                 = 1
+    iface_mat_name:   dict[int, str]      = {}
 
     for iface in interfaces:
         mat_inside  = canonical(iface["material_inside"])
         mat_outside = canonical(iface["material_outside"])
         surface     = iface["surface"]
-        mat_name    = f"{mat_inside}__{mat_outside}__{surface}"
+        g4_surface  = get_surface_for_interface(iface, surface_index)
+        mat_name    = (f"{mat_inside}__{mat_outside}__{surface}"
+                       f"__{_surface_signature(g4_surface)}")
+        iface_mat_name[iface["id"]] = mat_name
 
         if mat_name not in materials:
             flags_in, flags_out = _surface_flags(surface)
 
-            g4_surface = get_surface_for_interface(iface, surface_index)
             properties = {}
 
             if surface == "detector":
@@ -325,10 +347,7 @@ def build_scene(
     identity  = Transform()
 
     for iface in valid_interfaces:
-        mat_inside  = canonical(iface["material_inside"])
-        mat_outside = canonical(iface["material_outside"])
-        surface     = iface["surface"]
-        mat_name    = f"{mat_inside}__{mat_outside}__{surface}"
+        mat_name    = iface_mat_name[iface["id"]]
         mesh_name   = f"interface_{iface['id']}"
 
         det_id   = detector_map.get(iface["id"], 0)

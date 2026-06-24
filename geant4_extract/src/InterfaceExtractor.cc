@@ -452,8 +452,10 @@ void InterfaceExtractor::Extract(
         iface.nameB     = B.name;
         iface.materialA = A.material;
         iface.materialB = B.material;
-        iface.lv_inside   = orient.inside->name;
-        iface.lv_outside  = orient.outside->name;
+        iface.pv_inside   = orient.inside->name;
+        iface.pv_outside  = orient.outside->name;
+        iface.lv_inside   = orient.inside->lv_name;
+        iface.lv_outside  = orient.outside->lv_name;
         iface.mat_inside  = orient.inside->material;
         iface.mat_outside = orient.outside->material;
         iface.is_detector = A_det || B_det;
@@ -467,9 +469,9 @@ void InterfaceExtractor::Extract(
 
         std::cout
             << "INTERFACE " << iface.id << ":\n  "
-            << iface.lv_inside  << " (" << iface.mat_inside  << ")\n"
+            << iface.pv_inside  << " (" << iface.mat_inside  << ")\n"
             << "  --> "
-            << iface.lv_outside << " (" << iface.mat_outside << ")\n"
+            << iface.pv_outside << " (" << iface.mat_outside << ")\n"
             << (iface.is_detector
                 ? "  detector channel: " + std::to_string(iface.detector_channel) + "\n"
                 : "")
@@ -631,7 +633,7 @@ void InterfaceExtractor::Extract(
                 FindSharedFaces(mother.shape, daughter.shape, fuzzy_mm, kAreaFloor);
             bool has_flush = HasRealSurface(flush, kAreaFloor);
 
-            // (Fix 1+3) re-attribute M's outward surface under the flush
+            // re-attribute M's outward surface under the flush
             // footprint to the daughter. Done BEFORE emitting M↔D so the
             // freshly-created M↔D is not itself a steal target.
             if (has_flush)
@@ -657,7 +659,7 @@ void InterfaceExtractor::Extract(
 
             // patches to cut out of M↔D (no double coverage):
             //   - regions shared with touching siblings
-            //   - (Fix 2) faces flush with the mother's outer wall, which
+            //   - faces flush with the mother's outer wall, which
             //     carry no mother material and were re-attributed above
             std::vector<TopoDS_Shape> patches;
             auto pit = shared_per_daughter.find(daughter.id);
@@ -705,8 +707,8 @@ void InterfaceExtractor::Extract(
         for (auto& iface : assembly.interfaces) {
             if (!HasRealSurface(iface.boundary, kAreaFloor)) {
                 std::cout << "  [INFO] dropping interface " << iface.id
-                          << " (" << iface.lv_inside << " -> "
-                          << iface.lv_outside
+                          << " (" << iface.pv_inside << " -> "
+                          << iface.pv_outside
                           << "): fully re-attributed to a flush daughter\n";
                 continue;
             }
@@ -743,6 +745,8 @@ void InterfaceExtractor::WriteInterfacesJSON(
         entry["id"]               = iface.id;
         entry["stl"]              = "cad/interfaces/interface_"
                                     + std::to_string(iface.id) + ".stl";
+        entry["pv_inside"]        = iface.pv_inside;
+        entry["pv_outside"]       = iface.pv_outside;
         entry["lv_inside"]        = iface.lv_inside;
         entry["lv_outside"]       = iface.lv_outside;
         entry["material_inside"]  = iface.mat_inside;
