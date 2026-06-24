@@ -16,10 +16,8 @@ struct VolumeInstance {
     // (excluded) World volume
     uint64_t mother_id = kNoMother;
 
-    // physical volume name (placement); not unique across replicas
     std::string name;
 
-    // logical volume name (shape/material definition); shared by replicas
     std::string lv_name;
 
     std::string material;

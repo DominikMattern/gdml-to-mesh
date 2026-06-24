@@ -18,10 +18,8 @@ struct OpticalInterface {
     std::string materialB;
 
     // filled by InterfaceExtractor::Extract
-    // physical volume names (placements) — match border surfaces
     std::string pv_inside;
     std::string pv_outside;
-    // logical volume names (definitions) — match skin surfaces
     std::string lv_inside;
     std::string lv_outside;
     std::string mat_inside;
